@@ -20,6 +20,8 @@ ticker,cik,filingDate,accessionNumber,source,score
 - Ollama installed and running
 - A local Ollama model, for example `qwen3:8b`
 
+No Python packages are required beyond the standard library. `requirements.txt` is intentionally empty except for comments.
+
 Check local models:
 
 ```powershell
