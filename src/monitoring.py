@@ -84,6 +84,52 @@ def format_duration(seconds: float) -> str:
     return f"{seconds}s"
 
 
+def progress_target_rows(target_rows: int, completed_before_run: int) -> int:
+    """Return the progress denominator including rows completed before resume."""
+    already_completed = max(completed_before_run, 0)
+    return max(already_completed + max(target_rows, 0), already_completed)
+
+
+def progress_metrics(
+    progress: dict[str, int],
+    target_rows: int,
+    start_time: float,
+    completed_before_run: int,
+) -> dict[str, int | float]:
+    """Calculate progress and ETA without letting resume rows inflate throughput."""
+    run_done = progress["completed"] + progress["failed"]
+    already_completed = max(completed_before_run, 0)
+    processed_total = already_completed + run_done
+    target_total = progress_target_rows(target_rows, already_completed)
+    elapsed = time.monotonic() - start_time
+    rows_per_minute = (run_done / elapsed) * 60 if elapsed > 0 else 0.0
+    remaining = max(target_total - processed_total, 0)
+    percent_done = min(processed_total, target_total) if target_total else processed_total
+    percent = (percent_done / target_total) * 100 if target_total else 100.0
+    eta_seconds = (remaining / rows_per_minute) * 60 if rows_per_minute > 0 else 0
+
+    return {
+        "already_completed": already_completed,
+        "run_done": run_done,
+        "processed_total": processed_total,
+        "target_total": target_total,
+        "elapsed": elapsed,
+        "rows_per_minute": rows_per_minute,
+        "remaining": remaining,
+        "percent": percent,
+        "eta_seconds": eta_seconds,
+    }
+
+
+def format_eta(remaining: int | float, rows_per_minute: float, eta_seconds: float) -> str:
+    """Format ETA while avoiding fake estimates before new rows finish."""
+    if remaining <= 0:
+        return "0s"
+    if rows_per_minute <= 0:
+        return "-"
+    return format_duration(eta_seconds)
+
+
 def log_run_start(total_rows: int, target_rows: int, completed_before_run: int) -> None:
     """Log the run configuration and monitoring baseline."""
     LOGGER.info("starting hype/vagueness scoring")
@@ -100,40 +146,43 @@ def log_run_start(total_rows: int, target_rows: int, completed_before_run: int) 
     LOGGER.info("errors=%s", cfg.ERRORS_CSV)
     LOGGER.info("log=%s", cfg.LOG_FILE)
     LOGGER.info(
-        "rows_total=%s rows_target_this_run=%s resume=%s already_completed=%s limit=%s",
+        "rows_total=%s rows_target_this_run=%s rows_target_with_resume=%s resume=%s already_completed=%s limit=%s",
         total_rows,
         target_rows,
+        progress_target_rows(target_rows, completed_before_run),
         cfg.RESUME,
         completed_before_run,
         cfg.LIMIT,
     )
 
 
-def log_progress(progress: dict[str, int], target_rows: int, start_time: float, pending_count: int) -> None:
+def log_progress(
+    progress: dict[str, int],
+    target_rows: int,
+    start_time: float,
+    pending_count: int,
+    completed_before_run: int,
+) -> None:
     """Log a result-write checkpoint with throughput, percent done, and ETA."""
     clear_terminal_status()
 
-    done = progress["completed"] + progress["failed"]
-    elapsed = time.monotonic() - start_time
-    rows_per_minute = (done / elapsed) * 60 if elapsed > 0 else 0.0
-    percent = (done / target_rows) * 100 if target_rows else 100.0
-    remaining = max(target_rows - done, 0)
-    eta_seconds = (remaining / rows_per_minute) * 60 if rows_per_minute > 0 else 0
+    metrics = progress_metrics(progress, target_rows, start_time, completed_before_run)
 
     LOGGER.info(
-        "results written processed=%s/%s %.1f%% completed=%s failed=%s skipped=%s submitted=%s pending=%s "
+        "results written processed=%s/%s %.1f%% already_completed=%s completed=%s failed=%s skipped=%s submitted=%s pending=%s "
         "rate=%.2f rows/min elapsed=%s eta=%s",
-        done,
-        target_rows,
-        percent,
+        metrics["processed_total"],
+        metrics["target_total"],
+        metrics["percent"],
+        metrics["already_completed"],
         progress["completed"],
         progress["failed"],
         progress["skipped"],
         progress["submitted"],
         pending_count,
-        rows_per_minute,
-        format_duration(elapsed),
-        format_duration(eta_seconds),
+        metrics["rows_per_minute"],
+        format_duration(metrics["elapsed"]),
+        format_eta(metrics["remaining"], metrics["rows_per_minute"], metrics["eta_seconds"]),
     )
 
 
@@ -142,12 +191,13 @@ def log_results_written_if_needed(
     target_rows: int,
     start_time: float,
     pending_count: int,
+    completed_before_run: int,
 ) -> None:
     """Log a result-write checkpoint after enough newly written rows."""
     done = progress["completed"] + progress["failed"]
     if cfg.PROGRESS_EVERY > 0 and done - progress["last_logged"] >= cfg.PROGRESS_EVERY:
         progress["last_logged"] = done
-        log_progress(progress, target_rows, start_time, pending_count)
+        log_progress(progress, target_rows, start_time, pending_count, completed_before_run)
 
 
 def dashboard_html() -> str:
@@ -336,6 +386,10 @@ def start_dashboard() -> ThreadingHTTPServer | None:
 
 def init_monitor_state(total_rows: int, target_rows: int, completed_before_run: int, start_time: float) -> None:
     """Initialize dashboard state at the start of a scoring run."""
+    already_completed = max(completed_before_run, 0)
+    monitored_target_rows = progress_target_rows(target_rows, already_completed)
+    percent = (already_completed / monitored_target_rows) * 100 if monitored_target_rows else 100.0
+
     with MONITOR_LOCK:
         MONITOR_STATE.clear()
         MONITOR_STATE.update(
@@ -348,18 +402,20 @@ def init_monitor_state(total_rows: int, target_rows: int, completed_before_run: 
                 "errors": str(cfg.ERRORS_CSV),
                 "log": str(cfg.LOG_FILE),
                 "total_rows": total_rows,
-                "target_rows": target_rows,
-                "already_completed": completed_before_run,
+                "target_rows": monitored_target_rows,
+                "target_rows_this_run": target_rows,
+                "already_completed": already_completed,
                 "submitted": 0,
-                "completed": 0,
+                "completed": already_completed,
+                "completed_this_run": 0,
                 "failed": 0,
                 "skipped": 0,
                 "pending": 0,
-                "processed": 0,
-                "percent": 0.0,
+                "processed": already_completed,
+                "percent": percent,
                 "rows_per_minute": 0.0,
                 "elapsed": "0s",
-                "eta": "-",
+                "eta": "0s" if already_completed >= monitored_target_rows else "-",
                 "start_time": start_time,
                 "current_rows": {},
                 "recent_errors": [],
@@ -367,28 +423,33 @@ def init_monitor_state(total_rows: int, target_rows: int, completed_before_run: 
         )
 
 
-def update_monitor_progress(progress: dict[str, int], target_rows: int, start_time: float, pending_count: int) -> None:
+def update_monitor_progress(
+    progress: dict[str, int],
+    target_rows: int,
+    start_time: float,
+    pending_count: int,
+    completed_before_run: int,
+) -> None:
     """Update dashboard counters, throughput, and ETA."""
-    done = progress["completed"] + progress["failed"]
-    elapsed = time.monotonic() - start_time
-    rows_per_minute = (done / elapsed) * 60 if elapsed > 0 else 0.0
-    percent = (done / target_rows) * 100 if target_rows else 100.0
-    remaining = max(target_rows - done, 0)
-    eta_seconds = (remaining / rows_per_minute) * 60 if rows_per_minute > 0 else 0
+    metrics = progress_metrics(progress, target_rows, start_time, completed_before_run)
 
     with MONITOR_LOCK:
         MONITOR_STATE.update(
             {
+                "target_rows": metrics["target_total"],
+                "target_rows_this_run": target_rows,
+                "already_completed": metrics["already_completed"],
                 "submitted": progress["submitted"],
-                "completed": progress["completed"],
+                "completed": metrics["already_completed"] + progress["completed"],
+                "completed_this_run": progress["completed"],
                 "failed": progress["failed"],
                 "skipped": progress["skipped"],
                 "pending": pending_count,
-                "processed": done,
-                "percent": percent,
-                "rows_per_minute": rows_per_minute,
-                "elapsed": format_duration(elapsed),
-                "eta": format_duration(eta_seconds) if rows_per_minute > 0 else "-",
+                "processed": metrics["processed_total"],
+                "percent": metrics["percent"],
+                "rows_per_minute": metrics["rows_per_minute"],
+                "elapsed": format_duration(metrics["elapsed"]),
+                "eta": format_eta(metrics["remaining"], metrics["rows_per_minute"], metrics["eta_seconds"]),
             }
         )
 
