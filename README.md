@@ -137,7 +137,7 @@ Rows that fail after retries are also written to `outputs/item202_hype_vagueness
 
 ## Scoring
 
-The prompt asks for one float from `0.0` to `10.0`.
+The prompt asks for one float from `0.0` to `100.0`.
 
 Low score:
 
