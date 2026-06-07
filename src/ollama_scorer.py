@@ -14,7 +14,7 @@ try:
         update_monitor_current_row,
         write_terminal_status,
     )
-    from .rows import metadata
+    from .rows import output_row
 except ImportError:  # Allows running via python src/main.py
     import config as cfg
     from monitoring import (
@@ -24,25 +24,44 @@ except ImportError:  # Allows running via python src/main.py
         update_monitor_current_row,
         write_terminal_status,
     )
-    from rows import metadata
+    from rows import output_row
 
 
-def parse_score(content: str) -> float:
-    """Parse and validate the numeric score returned by the Ollama model."""
-    score = float(json.loads(content)["score"])
-    if not 0.0 <= score <= 10.0:
-        raise ValueError(f"Score outside 0-10 range: {score}")
-    return round(score, 4)
+def parse_score_result(content: str) -> tuple[float, str]:
+    """Parse and validate the score result returned by the Ollama model."""
+    data = json.loads(content)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected JSON object, got {type(data).__name__}")
+
+    expected_keys = {"score", "reasoning"}
+    actual_keys = set(data)
+    if actual_keys != expected_keys:
+        raise ValueError(f"Expected keys {sorted(expected_keys)}, got {sorted(actual_keys)}")
+
+    score = float(data["score"])
+    if not 0.0 <= score <= 100.0:
+        raise ValueError(f"Score outside 0-100 range: {score}")
+
+    reasoning = data["reasoning"]
+    if not isinstance(reasoning, str):
+        raise TypeError(f"Reasoning must be a string, got {type(reasoning).__name__}")
+
+    reasoning = " ".join(reasoning.strip().split())
+    if not reasoning:
+        raise ValueError("Reasoning must not be empty")
+
+    return round(score, 4), reasoning
 
 
-def ollama_score(text: str, prompt: str, previous_error: str | None = None) -> float:
-    """Send one filing text to Ollama and return its hype/vagueness score."""
+def ollama_score(text: str, prompt: str, previous_error: str | None = None) -> tuple[float, str]:
+    """Send one filing text to Ollama and return its hype/vagueness score result."""
     retry_instruction = ""
     if previous_error:
         retry_instruction = (
             "Your previous answer was rejected by the parser for this reason:\n"
             f"{previous_error}\n\n"
-            "Correct the problem. Return a score from 0.0 to 10.0 as exactly one JSON object.\n\n"
+            "Correct the problem. Return a score from 0.0 to 100.0 and one reasoning sentence "
+            "as exactly one JSON object.\n\n"
         )
 
     payload = {
@@ -50,8 +69,11 @@ def ollama_score(text: str, prompt: str, previous_error: str | None = None) -> f
         "stream": False,
         "format": {
             "type": "object",
-            "properties": {"score": {"type": "number", "minimum": 0, "maximum": 10}},
-            "required": ["score"],
+            "properties": {
+                "score": {"type": "number", "minimum": 0, "maximum": 100},
+                "reasoning": {"type": "string"},
+            },
+            "required": ["score", "reasoning"],
             "additionalProperties": False,
         },
         "think": False,
@@ -64,7 +86,9 @@ def ollama_score(text: str, prompt: str, previous_error: str | None = None) -> f
                     f"{retry_instruction}"
                     "Score this 8-K Item 2.02 text for hype/vagueness. "
                     "Return exactly one JSON object matching this schema: "
-                    '{"score": number}. Do not include reasoning, markdown, comments, or extra keys.\n\n'
+                    '{"score": number, "reasoning": string}. '
+                    "The reasoning must be exactly one concise sentence. "
+                    "Do not include markdown, comments, or extra keys.\n\n"
                     f"TEXT:\n{text.strip()}"
                 ),
             },
@@ -74,7 +98,7 @@ def ollama_score(text: str, prompt: str, previous_error: str | None = None) -> f
             "top_k": 1,
             "top_p": 0.1,
             "seed": 42,
-            "num_predict": 32,
+            "num_predict": 128,
         },
     }
 
@@ -92,7 +116,7 @@ def ollama_score(text: str, prompt: str, previous_error: str | None = None) -> f
     if not content:
         raise ValueError(f"Ollama returned no message content: {response_data}")
 
-    return parse_score(content)
+    return parse_score_result(content)
 
 
 def score_with_retries(row: dict[str, str], prompt: str, row_number: int) -> dict[str, str]:
@@ -112,8 +136,8 @@ def score_with_retries(row: dict[str, str], prompt: str, row_number: int) -> dic
                         f"filingDate={row['filingDate']} accession={row['accessionNumber']} "
                         f"chars={text_chars} attempt={attempt + 1}/{cfg.RETRIES + 1}"
                     )
-                score = ollama_score(row["item_202_text"], prompt, previous_error)
-                return {**metadata(row), "score": f"{score:.4f}"}
+                score, reasoning = ollama_score(row["item_202_text"], prompt, previous_error)
+                return output_row(row, score, reasoning)
             except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError, KeyError, TypeError) as exc:
                 last_error = exc
                 previous_error = str(exc)
