@@ -11,7 +11,10 @@ else:
 
 
 def main() -> None:
-    """Entry point for running the configured scoring pipeline."""
+    """Run the scoring pipeline."""
+    if len(sys.argv) > 1:
+        raise SystemExit("Use: python src/main.py")
+
     run_score()
 
 

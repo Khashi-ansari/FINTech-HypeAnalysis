@@ -6,10 +6,12 @@ try:
     from . import config as cfg
     from .ollama_scorer import ollama_score
     from .pipeline import load_prompt
+    from .scoring import vagueness_score
 except ImportError:  # Allows running via python src/main.py
     import config as cfg
     from ollama_scorer import ollama_score
     from pipeline import load_prompt
+    from scoring import vagueness_score
 
 
 def read_item_202_text(row_number: int) -> tuple[dict[str, str], str]:
@@ -48,7 +50,8 @@ def run_repeatability_test(row_number: int, runs: int) -> list[str]:
     )
 
     for run_number in range(1, runs + 1):
-        raw_score, _reasoning = ollama_score(text, prompt)
+        census = ollama_score(text, prompt)
+        raw_score = vagueness_score(census)
         score = f"{raw_score:.4f}"
         scores.append(score)
         print(f"repeatability run {run_number}/{runs} score={score}")

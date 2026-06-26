@@ -10,6 +10,9 @@ try:
     from .monitoring import (
         LOGGER,
         add_monitor_error,
+        add_monitor_queued_row,
+        add_monitor_score,
+        add_monitor_validation,
         clear_terminal_status,
         format_duration,
         init_monitor_state,
@@ -21,13 +24,19 @@ try:
         start_dashboard,
         update_monitor_progress,
     )
-    from .ollama_scorer import score_with_retries
+    from .ollama_scorer import (
+        error_diagnostic_fields,
+        score_with_retries,
+    )
     from .rows import ERROR_FIELDNAMES, OUTPUT_FIELDNAMES, metadata, row_key
 except ImportError:  # Allows running via python src/main.py
     import config as cfg
     from monitoring import (
         LOGGER,
         add_monitor_error,
+        add_monitor_queued_row,
+        add_monitor_score,
+        add_monitor_validation,
         clear_terminal_status,
         format_duration,
         init_monitor_state,
@@ -39,13 +48,24 @@ except ImportError:  # Allows running via python src/main.py
         start_dashboard,
         update_monitor_progress,
     )
-    from ollama_scorer import score_with_retries
+    from ollama_scorer import error_diagnostic_fields, score_with_retries
     from rows import ERROR_FIELDNAMES, OUTPUT_FIELDNAMES, metadata, row_key
 
 
 def load_prompt() -> str:
     """Read the hype/vagueness scoring prompt from disk."""
     return cfg.PROMPT_FILE.read_text(encoding="utf-8")
+
+
+def load_validation_prompt() -> str:
+    """Read the hype/vagueness validation prompt from disk."""
+    return cfg.VALIDATION_PROMPT_FILE.read_text(encoding="utf-8")
+
+
+def validate_config() -> None:
+    """Validate runtime configuration values that affect pipeline behavior."""
+    if not 0.0 <= cfg.VALIDATION_PCT <= 1.0:
+        raise ValueError(f"VALIDATION_PCT must be between 0.0 and 1.0, got {cfg.VALIDATION_PCT}")
 
 
 def count_input_rows() -> int:
@@ -80,7 +100,7 @@ def ensure_csv_file(path: Path, fieldnames: list[str]) -> None:
     with path.open("r", encoding="utf-8-sig", newline="") as file:
         reader = csv.DictReader(file)
         current_fieldnames = reader.fieldnames or []
-        if all(field in current_fieldnames for field in fieldnames):
+        if current_fieldnames == fieldnames:
             return
         rows = list(reader)
 
@@ -114,8 +134,27 @@ def write_finished(
             result = future.result()
             output_writer.writerow(result)
             progress["completed"] += 1
+            validation_status = result.get("validation_status", "")
+            if validation_status in {"accepted", "corrected"}:
+                progress["validated"] += 1
+                add_monitor_validation(result)
+                LOGGER.info(
+                    "validation status=%s ticker=%s accession=%s",
+                    validation_status,
+                    row["ticker"],
+                    row["accessionNumber"],
+                )
+            if validation_status == "corrected":
+                progress["corrected"] += 1
+            add_monitor_score(result)
         except Exception as exc:  # Keep long runs moving; failed rows can be rerun later.
-            error_writer.writerow({**metadata(row), "error": str(exc)})
+            error_writer.writerow(
+                {
+                    **metadata(row),
+                    **error_diagnostic_fields(exc),
+                    "error": str(exc),
+                }
+            )
             progress["failed"] += 1
             add_monitor_error(row, exc)
             clear_terminal_status()
@@ -138,9 +177,11 @@ def write_finished(
 
 def run_score() -> None:
     """Run the full parallel scoring pipeline over the configured input CSV."""
+    validate_config()
     setup_logging()
     start_time = time.monotonic()
     prompt = load_prompt()
+    validation_prompt = load_validation_prompt() if cfg.VALIDATION_PCT > 0.0 else ""
     completed_keys = read_completed_keys() if cfg.RESUME else set()
     completed_before_run = len(completed_keys)
     total_rows = count_input_rows()
@@ -155,7 +196,16 @@ def run_score() -> None:
 
     ensure_output_files()
 
-    progress = {"submitted": 0, "completed": 0, "failed": 0, "skipped": 0, "last_logged": 0, "log_after_flush": 0}
+    progress = {
+        "submitted": 0,
+        "completed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "validated": 0,
+        "corrected": 0,
+        "last_logged": 0,
+        "log_after_flush": 0,
+    }
     queue_size = cfg.CONCURRENCY * cfg.QUEUE_MULTIPLIER
     pending: set[Future[dict[str, str]]] = set()
 
@@ -184,7 +234,8 @@ def run_score() -> None:
                 update_monitor_progress(progress, target_rows, start_time, len(pending), completed_before_run)
                 continue
 
-            future = executor.submit(score_with_retries, row, prompt, row_number)
+            add_monitor_queued_row(str(row_number), row, row_number, len(row["item_202_text"]))
+            future = executor.submit(score_with_retries, row, prompt, validation_prompt, row_number)
             setattr(future, "input_row", row)
             pending.add(future)
             progress["submitted"] += 1
@@ -245,11 +296,13 @@ def run_score() -> None:
 
     mark_finished()
     LOGGER.info(
-        "finished submitted=%s completed=%s failed=%s skipped=%s elapsed=%s output=%s errors=%s log=%s",
+        "finished submitted=%s completed=%s failed=%s skipped=%s validated=%s corrected=%s elapsed=%s output=%s errors=%s log=%s",
         progress["submitted"],
         progress["completed"],
         progress["failed"],
         progress["skipped"],
+        progress["validated"],
+        progress["corrected"],
         format_duration(time.monotonic() - start_time),
         cfg.OUTPUT_CSV,
         cfg.ERRORS_CSV,

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>8-K Hype/Vagueness Scoring Monitor</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/dashboard.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <div class="subtle">Local Ollama pipeline</div>
+        <h1>8-K scoring monitor</h1>
+      </div>
+      <div class="subtle">Auto-refreshes every second<br><code>/status</code> returns JSON</div>
+    </header>
+    <section class="dashboard">
+      <div class="summary-grid">
+        <div class="card metric-card"><div class="label">Status</div><div class="value" id="run_status">-</div></div>
+        <div class="card metric-card"><div class="label">Completed</div><div class="value" id="completed">0</div></div>
+        <div class="card metric-card"><div class="label">Failed</div><div class="value bad" id="failed">0</div></div>
+        <div class="card metric-card"><div class="label">ETA</div><div class="value" id="eta">-</div></div>
+        <div class="card metric-card"><div class="label">Validated</div><div class="value" id="validated">0</div></div>
+        <div class="card metric-card"><div class="label">Corrected</div><div class="value" id="corrected">0</div></div>
+      </div>
+      <div class="overview-grid">
+        <div class="card">
+          <div class="label">Progress</div>
+          <div class="bar" aria-label="progress"><span id="bar"></span></div>
+          <p class="subtle" id="progress_text">-</p>
+        </div>
+        <div class="card">
+          <div class="label">Throughput</div>
+          <div class="value" id="rate">0 rows/min</div>
+          <p class="subtle" id="elapsed">elapsed -</p>
+        </div>
+        <div class="card">
+          <div class="label">Run</div>
+          <p><code id="model">-</code></p>
+          <p class="subtle" id="paths">-</p>
+        </div>
+      </div>
+      <div class="worker-grid">
+        <div class="card">
+          <div class="label">Queued</div>
+          <table>
+            <thead><tr><th>Row</th><th>Ticker</th><th>Date</th><th>Accession</th><th>Chars</th></tr></thead>
+            <tbody id="queued"><tr><td colspan="5" class="subtle">No queued rows</td></tr></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <div class="label">Current workers</div>
+          <table>
+            <thead><tr><th>Row</th><th>Stage</th><th>Ticker</th><th>Date</th><th>Accession</th><th>Chars</th><th>Attempt</th></tr></thead>
+            <tbody id="current"><tr><td colspan="7" class="subtle">No active rows</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="history-grid">
+        <div class="card">
+          <div class="label">Recent scores</div>
+          <table>
+            <thead><tr><th>Time</th><th>Ticker</th><th>Date</th><th>Score</th><th>Validation</th><th>Reasoning</th></tr></thead>
+            <tbody id="scores"><tr><td colspan="6" class="subtle">No scored rows yet</td></tr></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <div class="label">Recent validations</div>
+          <table>
+            <thead><tr><th>Time</th><th>Ticker</th><th>Date</th><th>Score</th><th>Status</th><th>Decision</th></tr></thead>
+            <tbody id="validations"><tr><td colspan="6" class="subtle">No validated rows yet</td></tr></tbody>
+          </table>
+        </div>
+        <div class="card full">
+          <div class="label">Recent errors</div>
+          <table>
+            <thead><tr><th>Time</th><th>Ticker</th><th>Accession</th><th>Error</th></tr></thead>
+            <tbody id="errors"><tr><td colspan="4" class="subtle">No errors</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

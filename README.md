@@ -1,52 +1,39 @@
 # FINTech Hype Analysis
 
-Local, resumable pipeline for scoring the hype/vagueness of SEC 8-K Item 2.02 texts.
-
-The project uses a free local Ollama model. The default input is:
-
-```text
-resources/item202_clean.csv
-```
-
-Each input row is one 8-K. The scorer reads `item_202_text` and writes:
-
-```text
-ticker,cik,filingDate,accessionNumber,source,score
-```
+Local, resumable Python pipeline for scoring hype and vagueness in SEC Form 8-K
+Item 2.02 earnings-release text. The project uses Ollama locally and otherwise
+depends only on the Python standard library.
 
 ## Requirements
 
 - Python 3.10+
-- Ollama installed and running
-- A local Ollama model, for example `qwen3:8b`
+- Ollama installed and running locally
+- A local Ollama model, currently configured as `qwen3:8b`
 
-No Python packages are required beyond the standard library. `requirements.txt` is intentionally empty except for comments.
+Install Python dependencies:
 
-Check local models:
+```powershell
+pip install -r requirements.txt
+```
+
+`requirements.txt` is intentionally empty except for comments because the
+runtime uses only the standard library. Ollama is an external service, not a pip
+dependency.
+
+Check local Ollama models:
 
 ```powershell
 ollama list
+ollama ps
 ```
 
-If needed, pull a free model:
+## Run
 
-```powershell
-ollama pull llama3.1
-```
-
-or:
-
-```powershell
-ollama pull qwen3:8b
-```
-
-## Quick Test
-
-For a quick test, edit these values in `src/config.py`:
+Runtime settings are defined in [src/config.py](src/config.py). For a small
+smoke run, temporarily set:
 
 ```python
 LIMIT = 2
-CONCURRENCY = 1
 OUTPUT_CSV = PROJECT_ROOT / "outputs/test_scores.csv"
 ERRORS_CSV = PROJECT_ROOT / "outputs/test_errors.csv"
 ```
@@ -57,114 +44,197 @@ Then run:
 python src/main.py
 ```
 
-## Full Run
+The output CSV is appended as rows complete. With `RESUME = True`, rerunning the
+pipeline skips rows whose metadata key is already present in the output CSV.
 
-Use these default config values in `src/config.py`:
+Optional diagnostics:
+
+```powershell
+python src/calibrate.py
+python -m unittest discover -s tests
+python -m compileall -q src tests
+```
+
+`src/calibrate.py` prints a simple histogram for the configured output score
+file.
+
+## Configuration
+
+Important defaults in [src/config.py](src/config.py):
 
 ```python
 INPUT_CSV = PROJECT_ROOT / "resources/item202_clean.csv"
 OUTPUT_CSV = PROJECT_ROOT / "outputs/item202_hype_vagueness_scores.csv"
 ERRORS_CSV = PROJECT_ROOT / "outputs/item202_hype_vagueness_errors.csv"
+PROMPT_FILE = PROJECT_ROOT / "prompts/hype_vagueness_score.md"
+VALIDATION_PROMPT_FILE = PROJECT_ROOT / "prompts/hype_vagueness_validation.md"
 LOG_FILE = PROJECT_ROOT / "outputs/scoring.log"
+
 MODEL = "qwen3:8b"
-CONCURRENCY = 2
+OLLAMA_URL = "http://localhost:11434"
+
+CONCURRENCY = 1
+QUEUE_MULTIPLIER = 4
+REQUEST_TIMEOUT_SECONDS = 300
+RETRIES = 4
+VALIDATION_PCT = 0.1
 LIMIT = 0
+RESUME = True
+PROGRESS_EVERY = 25
 TERMINAL_STATUS_EVERY = 1
 DASHBOARD_ENABLED = True
+DASHBOARD_HOST = "127.0.0.1"
 DASHBOARD_PORT = 8765
 ```
 
-Then run:
+`CONCURRENCY = 1` is the conservative default for long-context local Ollama
+runs. Increase it only after checking GPU memory, CPU offload, and timeout
+behavior on the target machine.
 
-```powershell
-python src/main.py
+## Data Contract
+
+The default input CSV is ignored by git and expected at:
+
+```text
+resources/item202_clean.csv
 ```
 
-The output is appended as rows finish. If the process stops, run the script again; already scored rows are skipped when `RESUME = True`.
+Required input columns:
 
-## Configuration
+```text
+ticker,cik,filingDate,accessionNumber,source,item_202_text
+```
 
-All runtime settings are hardcoded in `src/config.py`.
+Resume identity is built from:
 
-- `CONCURRENCY = 2`: number of parallel Ollama requests. Increase only if your machine and Ollama setup can handle it.
-- `LIMIT = 0`: process all rows. Use a positive number for testing.
-- `RESUME = True`: skip rows already present in the output CSV.
-- `TERMINAL_STATUS_EVERY = 1`: show every currently scored row in the terminal. Use `25` to show every 25th row, or `0` to disable current-row terminal status.
-- `DASHBOARD_ENABLED = True`: start the local web dashboard.
-- `DASHBOARD_PORT = 8765`: dashboard port for `http://127.0.0.1:8765`.
-- `PROMPT_FILE = PROJECT_ROOT / "prompts/hype_vagueness_score.md"`: scoring rubric used by the model.
-- `LOG_FILE = PROJECT_ROOT / "outputs/scoring.log"`: persistent run log with progress and failure details.
+```text
+ticker,cik,filingDate,accessionNumber,source
+```
+
+Those metadata fields are joined in [src/rows.py](src/rows.py) to build the
+stable resume key.
+
+## Output Schemas
+
+Score output CSV:
+
+```text
+ticker,cik,filingDate,accessionNumber,source,score,reasoning,validation_status,validation_reasoning,original_score,original_reasoning,sentences_total,sentences_concrete,sentences_vague,promotional_terms,buzzword_hedge_terms,distinct_figures
+```
+
+Validation statuses:
+
+- `not_selected`: row was not selected for validation.
+- `accepted`: validation accepted the count census.
+- `corrected`: validation returned corrected count values.
+
+Error output CSV:
+
+```text
+ticker,cik,filingDate,accessionNumber,source,error_stage,error_type,error_message,prompt_target,model_output_preview,error
+```
+
+Generated outputs, raw resources, editor files, caches, and `.env` are ignored
+by git.
+
+## Scoring Method
+
+The model does not return the final score directly. It returns a six-field count
+census:
+
+```json
+{
+  "sentences_total": 0,
+  "sentences_concrete": 0,
+  "sentences_vague": 0,
+  "promotional_terms": 0,
+  "buzzword_hedge_terms": 0,
+  "distinct_figures": 0
+}
+```
+
+[src/scoring.py](src/scoring.py) converts those counts into a deterministic
+0-100 score. Higher scores indicate more vague, promotional, or weakly supported
+language. Lower scores indicate more concrete, quantified, neutral disclosure.
+This count-then-normalize design follows common financial-text analysis practice:
+classify auditable textual features first, normalize by document length, and keep
+the downstream score deterministic rather than asking the language model for a
+subjective scalar judgment.
+
+Rows selected by `VALIDATION_PCT` receive a second Ollama call using
+[prompts/hype_vagueness_validation.md](prompts/hype_vagueness_validation.md).
+Validation either accepts the census or returns corrected counts. Python then
+recomputes the final score from the accepted or corrected counts.
+
+Methodological references:
+
+- Loughran, T., & McDonald, B. (2011). When is a liability not a liability?
+  Textual analysis, dictionaries, and 10-Ks. *The Journal of Finance*, 66(1),
+  35-65.
+- Loughran, T., & McDonald, B. (2016). Textual analysis in accounting and
+  finance: A survey. *Journal of Accounting Research*, 54(4), 1187-1230.
+- Henry, E. (2008). Are investors influenced by how earnings press releases are
+  written? *The Journal of Business Communication*, 45(4), 363-407.
 
 ## Monitoring
 
-High-frequency current-row status is written only to the terminal and overwrites itself on one line.
-
-Lower-frequency checkpoints are written to both the terminal and `outputs/scoring.log`.
-
-If `DASHBOARD_ENABLED = True`, open this URL while the script is running:
+When `DASHBOARD_ENABLED = True`, the local dashboard is available while the
+pipeline runs:
 
 ```text
 http://127.0.0.1:8765
 ```
 
-The dashboard shows active worker rows, counters, throughput, ETA, and recent errors. Its JSON endpoint is:
+Dashboard JSON endpoint:
 
 ```text
 http://127.0.0.1:8765/status
 ```
 
-Current-row terminal status includes:
+The dashboard and log file track processed rows, completed rows, failures,
+skipped rows, pending work, validation counts, correction counts, throughput,
+elapsed time, and ETA. The log file is written to `outputs/scoring.log`.
 
-- currently scored row number
-- currently scored ticker
-- currently scored filing date
-- currently scored accession number
-- currently scored text character count
+## Repository Layout
 
-Log-file checkpoint lines are written after result CSV buffers are flushed and include:
+```text
+.
+|-- README.md
+|-- requirements.txt
+|-- prompts/
+|   |-- hype_vagueness_score.md
+|   `-- hype_vagueness_validation.md
+|-- src/
+|   |-- __init__.py
+|   |-- calibrate.py
+|   |-- config.py
+|   |-- dashboard/
+|   |   |-- dashboard.css
+|   |   |-- dashboard.js
+|   |   `-- index.html
+|   |-- main.py
+|   |-- monitoring.py
+|   |-- ollama_scorer.py
+|   |-- pipeline.py
+|   |-- repeatability.py
+|   |-- rows.py
+|   `-- scoring.py
+`-- tests/
+    |-- test_main_repeatability.py
+    |-- test_main_run_mode.py
+    |-- test_monitoring.py
+    |-- test_scoring_output.py
+    `-- test_vagueness_score.py
+```
 
-- processed rows
-- completed rows
-- failed rows
-- skipped rows
-- submitted rows
-- pending worker queue size
-- rows per minute
-- elapsed time
-- ETA
+`resources/` and `outputs/` are intentionally omitted from git by `.gitignore`.
 
-Rows that fail after retries are also written to `outputs/item202_hype_vagueness_errors.csv`.
+## Development Checks
 
-## Scoring
+Run before pushing:
 
-The prompt asks for one float from `0.0` to `100.0`.
-
-Low score:
-
-- precise
-- factual
-- quantified
-- accounting/GAAP-heavy
-- routine boilerplate
-
-High score:
-
-- promotional
-- vague
-- buzzword-heavy
-- unsupported optimism
-- broad forward-looking claims without concrete detail
-
-## Project Files
-
-- `src/main.py`: small entrypoint.
-- `src/config.py`: hardcoded runtime settings.
-- `src/pipeline.py`: CSV orchestration, resume logic, concurrency, output writing.
-- `src/ollama_scorer.py`: Ollama request, structured output parsing, retry feedback.
-- `src/monitoring.py`: console status, logging, and local web dashboard.
-- `src/rows.py`: shared row metadata helpers.
-- `prompts/hype_vagueness_score.md`: scoring rubric.
-- `resources/item202_clean.csv`: input data.
-- `outputs/item202_hype_vagueness_scores.csv`: default output.
-- `outputs/item202_hype_vagueness_errors.csv`: rows that failed after retries.
-- `outputs/scoring.log`: progress and monitoring log.
+```powershell
+python -m unittest discover -s tests
+python -m compileall -q src tests
+git diff --check
+```

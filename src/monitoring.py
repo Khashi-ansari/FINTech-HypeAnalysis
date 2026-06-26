@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import csv
 import json
 import logging
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 try:
@@ -20,8 +20,16 @@ TERMINAL_STATUS_LENGTH = 0
 MONITOR_LOCK = threading.Lock()
 MONITOR_STATE: dict[str, Any] = {
     "run_status": "not started",
+    "queued_rows": {},
     "current_rows": {},
+    "recent_scores": [],
+    "recent_validations": [],
     "recent_errors": [],
+}
+DASHBOARD_ASSET_DIR = Path(__file__).resolve().parent / "dashboard"
+DASHBOARD_ROUTES = {
+    "/dashboard.css": ("dashboard.css", "text/css; charset=utf-8"),
+    "/dashboard.js": ("dashboard.js", "application/javascript; charset=utf-8"),
 }
 
 
@@ -134,11 +142,12 @@ def log_run_start(total_rows: int, target_rows: int, completed_before_run: int) 
     """Log the run configuration and monitoring baseline."""
     LOGGER.info("starting hype/vagueness scoring")
     LOGGER.info(
-        "model=%s ollama_url=%s concurrency=%s retries=%s terminal_status_every=%s",
+        "model=%s ollama_url=%s concurrency=%s retries=%s validation_pct=%s terminal_status_every=%s",
         cfg.MODEL,
         cfg.OLLAMA_URL,
         cfg.CONCURRENCY,
         cfg.RETRIES,
+        cfg.VALIDATION_PCT,
         cfg.TERMINAL_STATUS_EVERY,
     )
     LOGGER.info("input=%s", cfg.INPUT_CSV)
@@ -170,7 +179,7 @@ def log_progress(
 
     LOGGER.info(
         "results written processed=%s/%s %.1f%% already_completed=%s completed=%s failed=%s skipped=%s submitted=%s pending=%s "
-        "rate=%.2f rows/min elapsed=%s eta=%s",
+        "validated=%s corrected=%s rate=%.2f rows/min elapsed=%s eta=%s",
         metrics["processed_total"],
         metrics["target_total"],
         metrics["percent"],
@@ -180,6 +189,8 @@ def log_progress(
         progress["skipped"],
         progress["submitted"],
         pending_count,
+        progress.get("validated", 0),
+        progress.get("corrected", 0),
         metrics["rows_per_minute"],
         format_duration(metrics["elapsed"]),
         format_eta(metrics["remaining"], metrics["rows_per_minute"], metrics["eta_seconds"]),
@@ -202,127 +213,12 @@ def log_results_written_if_needed(
 
 def dashboard_html() -> str:
     """Build the local monitoring dashboard HTML page."""
-    return """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>8-K Hype/Vagueness Scoring Monitor</title>
-  <style>
-    :root {
-      --bg: #f4efe6;
-      --ink: #18201b;
-      --muted: #6c665b;
-      --card: #fffaf0;
-      --line: #d8ccb8;
-      --accent: #0f6b5f;
-      --bad: #9b2f25;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: radial-gradient(circle at top left, #fff7df, var(--bg) 42%, #e8dfd1);
-      color: var(--ink);
-      font-family: Georgia, "Times New Roman", serif;
-    }
-    main { max-width: 1180px; margin: 0 auto; padding: 28px; }
-    header { display: flex; justify-content: space-between; gap: 18px; align-items: end; margin-bottom: 24px; }
-    h1 { margin: 0; font-size: clamp(28px, 5vw, 54px); line-height: .95; letter-spacing: -1px; }
-    .subtle { color: var(--muted); font-size: 14px; }
-    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
-    .card {
-      background: color-mix(in srgb, var(--card) 92%, white);
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 16px;
-      box-shadow: 0 10px 28px rgba(48, 38, 22, .08);
-    }
-    .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
-    .value { font-size: clamp(24px, 4vw, 38px); margin-top: 8px; font-variant-numeric: tabular-nums; }
-    .bar { height: 18px; border-radius: 999px; background: #ded4c1; overflow: hidden; border: 1px solid var(--line); }
-    .bar span { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), #d18b2c); transition: width .4s ease; }
-    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-variant-numeric: tabular-nums; }
-    th, td { text-align: left; border-bottom: 1px solid var(--line); padding: 10px 8px; vertical-align: top; }
-    th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .07em; }
-    .wide { grid-column: span 2; }
-    .full { grid-column: 1 / -1; }
-    .bad { color: var(--bad); }
-    code { font-family: Consolas, "Courier New", monospace; font-size: 12px; }
-    @media (max-width: 850px) { .grid { grid-template-columns: 1fr 1fr; } .wide { grid-column: 1 / -1; } header { display: block; } }
-    @media (max-width: 560px) { main { padding: 16px; } .grid { grid-template-columns: 1fr; } }
-  </style>
-</head>
-<body>
-  <main>
-    <header>
-      <div>
-        <div class="subtle">Local Ollama pipeline</div>
-        <h1>8-K scoring monitor</h1>
-      </div>
-      <div class="subtle">Auto-refreshes every second<br><code>/status</code> returns JSON</div>
-    </header>
-    <section class="grid">
-      <div class="card"><div class="label">Status</div><div class="value" id="run_status">-</div></div>
-      <div class="card"><div class="label">Completed</div><div class="value" id="completed">0</div></div>
-      <div class="card"><div class="label">Failed</div><div class="value bad" id="failed">0</div></div>
-      <div class="card"><div class="label">ETA</div><div class="value" id="eta">-</div></div>
-      <div class="card full">
-        <div class="label">Progress</div>
-        <div class="bar" aria-label="progress"><span id="bar"></span></div>
-        <p class="subtle" id="progress_text">-</p>
-      </div>
-      <div class="card wide">
-        <div class="label">Throughput</div>
-        <div class="value" id="rate">0 rows/min</div>
-        <p class="subtle" id="elapsed">elapsed -</p>
-      </div>
-      <div class="card wide">
-        <div class="label">Run</div>
-        <p><code id="model">-</code></p>
-        <p class="subtle" id="paths">-</p>
-      </div>
-      <div class="card full">
-        <div class="label">Currently scoring</div>
-        <table>
-          <thead><tr><th>Row</th><th>Ticker</th><th>Date</th><th>Accession</th><th>Chars</th><th>Attempt</th></tr></thead>
-          <tbody id="current"><tr><td colspan="6" class="subtle">No active rows</td></tr></tbody>
-        </table>
-      </div>
-      <div class="card full">
-        <div class="label">Recent errors</div>
-        <table>
-          <thead><tr><th>Time</th><th>Ticker</th><th>Accession</th><th>Error</th></tr></thead>
-          <tbody id="errors"><tr><td colspan="4" class="subtle">No errors</td></tr></tbody>
-        </table>
-      </div>
-    </section>
-  </main>
-  <script>
-    const text = (id, value) => document.getElementById(id).textContent = value ?? "-";
-    const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[c]));
-    async function refresh() {
-      const response = await fetch('/status', {cache: 'no-store'});
-      const s = await response.json();
-      text('run_status', s.run_status);
-      text('completed', s.completed);
-      text('failed', s.failed);
-      text('eta', s.eta);
-      text('rate', `${Number(s.rows_per_minute || 0).toFixed(2)} rows/min`);
-      text('elapsed', `elapsed ${s.elapsed}`);
-      text('progress_text', `${s.processed}/${s.target_rows} processed (${Number(s.percent || 0).toFixed(1)}%), submitted ${s.submitted}, skipped ${s.skipped}, pending ${s.pending}`);
-      text('model', `${s.model} via ${s.ollama_url}`);
-      text('paths', `output: ${s.output}`);
-      document.getElementById('bar').style.width = `${Math.min(100, Math.max(0, s.percent || 0))}%`;
-      const current = Object.values(s.current_rows || {});
-      document.getElementById('current').innerHTML = current.length ? current.map(r => `<tr><td>${esc(r.row_number)}</td><td>${esc(r.ticker)}</td><td>${esc(r.filingDate)}</td><td><code>${esc(r.accessionNumber)}</code></td><td>${esc(r.chars)}</td><td>${esc(r.attempt)}/${esc(r.max_attempts)}</td></tr>`).join('') : '<tr><td colspan="6" class="subtle">No active rows</td></tr>';
-      const errors = s.recent_errors || [];
-      document.getElementById('errors').innerHTML = errors.length ? errors.map(e => `<tr><td>${esc(e.time)}</td><td>${esc(e.ticker)}</td><td><code>${esc(e.accessionNumber)}</code></td><td class="bad">${esc(e.error)}</td></tr>`).join('') : '<tr><td colspan="4" class="subtle">No errors</td></tr>';
-    }
-    refresh().catch(console.error);
-    setInterval(() => refresh().catch(console.error), 1000);
-  </script>
-</body>
-</html>"""
+    return read_dashboard_asset("index.html")
+
+
+def read_dashboard_asset(filename: str) -> str:
+    """Read a static dashboard resource bundled with the source tree."""
+    return (DASHBOARD_ASSET_DIR / filename).read_text(encoding="utf-8")
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -331,12 +227,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         """Handle dashboard and status requests."""
         if self.path == "/":
-            body = dashboard_html().encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self.write_text_response(dashboard_html(), "text/html; charset=utf-8")
+            return
+
+        if self.path in DASHBOARD_ROUTES:
+            filename, content_type = DASHBOARD_ROUTES[self.path]
+            self.write_text_response(read_dashboard_asset(filename), content_type)
             return
 
         if self.path == "/status":
@@ -352,6 +248,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
+    def write_text_response(self, text: str, content_type: str) -> None:
+        """Write one UTF-8 dashboard text asset response."""
+        body = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def log_message(self, format: str, *args: Any) -> None:
         """Suppress per-request HTTP logging."""
         return
@@ -363,6 +269,9 @@ def monitor_snapshot() -> dict[str, Any]:
         return {
             **MONITOR_STATE,
             "current_rows": dict(MONITOR_STATE.get("current_rows", {})),
+            "queued_rows": dict(MONITOR_STATE.get("queued_rows", {})),
+            "recent_scores": list(MONITOR_STATE.get("recent_scores", [])),
+            "recent_validations": list(MONITOR_STATE.get("recent_validations", [])),
             "recent_errors": list(MONITOR_STATE.get("recent_errors", [])),
         }
 
@@ -397,6 +306,7 @@ def init_monitor_state(total_rows: int, target_rows: int, completed_before_run: 
                 "run_status": "running",
                 "model": cfg.MODEL,
                 "ollama_url": cfg.OLLAMA_URL,
+                "validation_pct": cfg.VALIDATION_PCT,
                 "input": str(cfg.INPUT_CSV),
                 "output": str(cfg.OUTPUT_CSV),
                 "errors": str(cfg.ERRORS_CSV),
@@ -410,6 +320,8 @@ def init_monitor_state(total_rows: int, target_rows: int, completed_before_run: 
                 "completed_this_run": 0,
                 "failed": 0,
                 "skipped": 0,
+                "validated": 0,
+                "corrected": 0,
                 "pending": 0,
                 "processed": already_completed,
                 "percent": percent,
@@ -417,7 +329,10 @@ def init_monitor_state(total_rows: int, target_rows: int, completed_before_run: 
                 "elapsed": "0s",
                 "eta": "0s" if already_completed >= monitored_target_rows else "-",
                 "start_time": start_time,
+                "queued_rows": {},
                 "current_rows": {},
+                "recent_scores": [],
+                "recent_validations": [],
                 "recent_errors": [],
             }
         )
@@ -444,6 +359,8 @@ def update_monitor_progress(
                 "completed_this_run": progress["completed"],
                 "failed": progress["failed"],
                 "skipped": progress["skipped"],
+                "validated": progress.get("validated", 0),
+                "corrected": progress.get("corrected", 0),
                 "pending": pending_count,
                 "processed": metrics["processed_total"],
                 "percent": metrics["percent"],
@@ -460,9 +377,11 @@ def update_monitor_current_row(
     row_number: int,
     text_chars: int,
     attempt: int,
+    stage: str,
 ) -> None:
     """Update the dashboard entry for a currently scoring worker row."""
     with MONITOR_LOCK:
+        MONITOR_STATE.setdefault("queued_rows", {}).pop(active_id, None)
         MONITOR_STATE.setdefault("current_rows", {})[active_id] = {
             "row_number": row_number,
             "ticker": row["ticker"],
@@ -471,13 +390,67 @@ def update_monitor_current_row(
             "chars": text_chars,
             "attempt": attempt,
             "max_attempts": cfg.RETRIES + 1,
+            "stage": stage,
+        }
+
+
+def add_monitor_queued_row(active_id: str, row: dict[str, str], row_number: int, text_chars: int) -> None:
+    """Add a submitted row to the dashboard queue list until a worker starts it."""
+    with MONITOR_LOCK:
+        queued_rows = MONITOR_STATE.setdefault("queued_rows", {})
+        queued_rows[active_id] = {
+            "row_number": row_number,
+            "ticker": row["ticker"],
+            "filingDate": row["filingDate"],
+            "accessionNumber": row["accessionNumber"],
+            "chars": text_chars,
         }
 
 
 def clear_monitor_current_row(active_id: str) -> None:
     """Remove a worker row from the dashboard active-row list."""
     with MONITOR_LOCK:
+        MONITOR_STATE.setdefault("queued_rows", {}).pop(active_id, None)
         MONITOR_STATE.setdefault("current_rows", {}).pop(active_id, None)
+
+
+def add_monitor_score(result: dict[str, str]) -> None:
+    """Add a recent scored row entry to the dashboard state."""
+    with MONITOR_LOCK:
+        recent_scores = MONITOR_STATE.setdefault("recent_scores", [])
+        recent_scores.insert(
+            0,
+            {
+                "time": time.strftime("%H:%M:%S"),
+                "ticker": result["ticker"],
+                "filingDate": result["filingDate"],
+                "accessionNumber": result["accessionNumber"],
+                "score": result["score"],
+                "validation_status": result.get("validation_status", ""),
+                "reasoning": result.get("reasoning", ""),
+            },
+        )
+        del recent_scores[10:]
+
+
+def add_monitor_validation(result: dict[str, str]) -> None:
+    """Add a recent validation entry to the dashboard state."""
+    with MONITOR_LOCK:
+        recent_validations = MONITOR_STATE.setdefault("recent_validations", [])
+        recent_validations.insert(
+            0,
+            {
+                "time": time.strftime("%H:%M:%S"),
+                "ticker": result["ticker"],
+                "filingDate": result["filingDate"],
+                "accessionNumber": result["accessionNumber"],
+                "score": result["score"],
+                "validation_status": result.get("validation_status", ""),
+                "validation_reasoning": result.get("validation_reasoning", ""),
+                "original_score": result.get("original_score", ""),
+            },
+        )
+        del recent_validations[10:]
 
 
 def add_monitor_error(row: dict[str, str], error: Exception) -> None:
