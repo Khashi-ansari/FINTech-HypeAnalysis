@@ -51,12 +51,33 @@ Optional diagnostics:
 
 ```powershell
 python src/calibrate.py
+python src/rescore.py
 python -m unittest discover -s tests
 python -m compileall -q src tests
 ```
 
 `src/calibrate.py` prints a simple histogram for the configured output score
 file.
+
+`src/rescore.py` adds another final-score column to the completed pipeline CSV.
+It uses only the stored census fields and does not call Ollama:
+
+```powershell
+python src/rescore.py
+```
+
+Pass the column name and a callable that accepts the count census:
+
+```python
+add_score_column(
+    csv_path,
+    "score_v2",
+    lambda census: 100 * census["sentences_vague"] / census["sentences_total"],
+)
+```
+
+CSV files are row-oriented, so adding a column requires rewriting the file.
+The script writes a temporary file and atomically replaces the original.
 
 ## Configuration
 
