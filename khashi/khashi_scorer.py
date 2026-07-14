@@ -1,4 +1,4 @@
-"""
+﻿"""
 Khashi HypeScore Scorer — 4-Component Framework
 ================================================
 Scores SEC 8-K Item 2.02 filings on 4 theoretically-grounded sub-components:
@@ -32,9 +32,9 @@ import urllib.request
 from datetime import datetime
 
 # ─── CONFIGURATION ────────────────────────────────────────────────────────────
-INPUT_CSV    = r"C:\Users\khash\AppData\Roaming\Claude\local-agent-mode-sessions\d35c77e8-f417-49b9-ad78-7ca8026536d5\f0dfcc85-ba76-465d-ae53-274ec7997bee\local_76db4b0c-efae-4aa8-8c88-1f2e5172d11b\uploads\item202_clean.csv"
-OUTPUT_CSV   = r"C:\Users\khash\AppData\Roaming\Claude\local-agent-mode-sessions\d35c77e8-f417-49b9-ad78-7ca8026536d5\f0dfcc85-ba76-465d-ae53-274ec7997bee\local_76db4b0c-efae-4aa8-8c88-1f2e5172d11b\outputs\khashi_hype_scores.csv"
-ERRORS_CSV   = r"C:\Users\khash\AppData\Roaming\Claude\local-agent-mode-sessions\d35c77e8-f417-49b9-ad78-7ca8026536d5\f0dfcc85-ba76-465d-ae53-274ec7997bee\local_76db4b0c-efae-4aa8-8c88-1f2e5172d11b\outputs\khashi_hype_errors.csv"
+INPUT_CSV    = r"C:\Users\khash\OneDrive\Desktop\Agents\item202_clean.csv"
+OUTPUT_CSV   = r"C:\Users\khash\Desktop\FINTech_HypeAnalysis\khashi\outputs\khashi_hype_scores.csv"
+ERRORS_CSV   = r"C:\Users\khash\Desktop\FINTech_HypeAnalysis\khashi\outputs\khashi_hype_errors.csv"
 
 SAMPLE_SIZE  = 300       # Number of filings to score. Set to 0 for all rows.
 RANDOM_SEED  = 42        # For reproducible sampling
