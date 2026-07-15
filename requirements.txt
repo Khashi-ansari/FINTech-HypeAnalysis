@@ -1,2 +1,3 @@
-# This project currently uses only the Python standard library.
-# Ollama must be installed separately and running locally; it is not a pip dependency.
+# khashi/khashi_scorer.py dependencies.
+# After installing, also run: python -m spacy download en_core_web_sm
+spacy
