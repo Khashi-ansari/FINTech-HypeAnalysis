@@ -36,12 +36,3 @@ Full input dataset (`item202_clean.csv`, ~16k S&P 500 8-K Item 2.02 filings,
 Drive folder, not in this repo. `khashi/outputs/` is gitignored — regenerate
 it by running the scorer (see `khashi/README.md`).
 
-## Team
-
-| Name | Role |
-|---|---|
-| Khashi | Group lead — HypeScore scoring pipeline (this repo's active code) |
-| Zexin Li | WP3 — EDGAR extraction, data pipeline |
-| Maximilian Kauwetter | WP4 — LSEG data, scoring pipeline (maintained separately at `gitlab.lrz.de/maximilianKauwetter/fintech_hypeanalysis`) |
-| Leon Ilg | WP5 — regressions |
-| Nico Seibold | Proposal author, literature review |
