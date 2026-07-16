@@ -13,11 +13,12 @@ initially rewards it, then corrects.
 ```
 .
 ├── khashi/
-│   ├── khashi_scorer.py        ← the HypeScore scorer (see khashi/README.md)
+│   ├── khashi_scorer.py         ← the HypeScore scorer (see khashi/README.md)
+│   ├── khashi_llm_refine.py     ← scoped LLM validation pass (see khashi/llm_validation/README.md)
 │   ├── README.md                ← full methodology, calibration history, how to run
 │   ├── outputs/                 ← generated run outputs (gitignored — see below)
-│   └── calibration_samples/     ← versioned 1000-row calibration runs (v2 → v3 rev1/2/3)
-├── HANDOFF_CONTEXT.md           ← working session notes
+│   ├── calibration_samples/     ← versioned 1000-row calibration runs (v2 → v3 rev1/2/3)
+│   └── llm_validation/          ← LLM validation pass on the 7.4% of rows with ambiguous SE signals
 ├── Hype_Definition_Document_v1.docx
 ├── Hype_Scoring_Rubric_v2.xlsx
 └── Literature_Reference_Tracker_v1.xlsx

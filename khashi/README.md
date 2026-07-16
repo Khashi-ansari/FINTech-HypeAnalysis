@@ -30,6 +30,7 @@ having sat through the calibration sessions to understand.
 14. [Running it](#14-running-it)
 15. [Output schema](#15-output-schema)
 16. [Every paper, and exactly what it grounds](#16-every-paper-and-exactly-what-it-grounds)
+17. [LLM validation pass on ambiguous SE rows](#17-llm-validation-pass-on-ambiguous-se-rows)
 
 ---
 
@@ -54,6 +55,14 @@ synthesis, `score_se_with_signals` / `call_se_signals_llm`) but is disabled:
 it took 60–80s/row on CPU versus <1s for the Python formula, for no
 measurable accuracy gain over the six-signal breakdown it would have
 summarized anyway.
+
+That said, "disabled everywhere" left the pipeline with zero actual
+LLM/agent judgment despite being designed for it. A scoped exception was
+added afterward: a targeted LLM validation pass on just the ~7% of filings
+where the deterministic SE signals genuinely conflict. See
+[§17](#17-llm-validation-pass-on-ambiguous-se-rows) and
+[`llm_validation/README.md`](llm_validation/README.md) for the full
+methodology, results, and findings.
 
 ## 3. Pipeline, step by step
 
@@ -635,3 +644,39 @@ need the final numbers.
 | Baginski, S. P., Hassell, J. M., & Hutton, A. P. (2004). Management earnings forecast disclosures and the causal attribution of forecast outcomes. *Journal of Accounting Research* (attribution literature). | The internal/external attribution asymmetry — direct theoretical basis for [E]/[F] and the SA formula (§7): management systematically credits itself for good news and blames the environment for bad news. |
 | Huang, X., Teoh, S. H., & Zhang, Y. (2014). Tone management. *The Accounting Review*, 89(3), 1083–1113. (ABTONE methodology) | The general "abnormal tone" framework this project's QO measure descends from — quantifying optimistic language in disclosures as a distinct, testable construct, separate from whether the underlying results justify it. |
 | Bochkay, K., Hales, J., & Chava, S. (2020). Hyperbole or reality? Investor response to extreme language in earnings conference calls. *The Accounting Review*, 95(2), 31–60. | Supporting bridge: extreme/hyperbolic language in earnings communications produces measurable, separable investor reactions — reinforces the hypothesis (§1) that hype language and information content are distinguishable, testable signals. |
+
+## 17. LLM validation pass on ambiguous SE rows
+
+The full 14,351-row run (§14) is, as noted in §2, entirely deterministic —
+the SE component's second stage (an LLM synthesising the D1-D6 signals into
+a final score) was designed but disabled for speed. That means the finished
+pipeline had zero actual LLM/agent judgment anywhere despite being designed
+for it.
+
+A scoped follow-up closes that gap without re-running or re-architecting
+anything: only the 1,067 filings (7.4% of the dataset) where the SE
+sub-signals genuinely conflict — strong promotion signals (D1+D2) alongside
+weak concealment signals (D4+D5), or the reverse — get an LLM call, using
+Groq's hosted `llama-3.1-8b-instant`. Everything else keeps its
+deterministic score unchanged; this is a validation/robustness pass, not a
+rescoring.
+
+**Result:** 1,064 of 1,067 rows scored (99.7%). Correlation between the
+deterministic and LLM SE scores is 0.75, mean difference is +0.15 (i.e., no
+systematic bias, the LLM mostly confirms the formula), and 89% of rows
+agree within 3 points on a 0–25 scale.
+
+**Finding:** the disagreements aren't random. A recurring +5-point gap
+(deterministic=9, LLM=14) appears 14 times, and 11 of those share one exact
+D1-D6 signature (D1=1, D2=3, D3=0, D4=1, D5=0, D6=1) — moderate non-GAAP
+density with quiet, non-obvious burial (no headline push, no explicit
+demotion language). The deterministic formula consistently undercounts this
+specific pattern; the LLM consistently catches it. That's a named,
+reproducible limitation of the keyword-based approach, not unexplained
+noise.
+
+Full methodology, implementation details, the complete results table, and
+the folder contents are documented separately in
+[`llm_validation/README.md`](llm_validation/README.md), kept apart from
+this file so the primary deterministic methodology and this validation
+add-on don't get tangled together.
